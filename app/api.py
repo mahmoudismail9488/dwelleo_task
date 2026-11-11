@@ -49,6 +49,11 @@ def create_app(store: Store | None = None, extractor=None) -> FastAPI:
     ) -> list[dict]:
         return get_store(request).list_listings(needs_review)
 
+    @app.get("/llm-runs")
+    def list_llm_runs(request: Request, message_id: str | None = None) -> list[dict]:
+        """Every LLM call with tokens, cost and latency (optionally for one message)."""
+        return get_store(request).list_llm_runs(message_id)
+
     @app.post("/listings/{listing_id}/approve")
     def approve_listing(listing_id: str, request: Request) -> dict:
         approved = get_store(request).approve(listing_id)

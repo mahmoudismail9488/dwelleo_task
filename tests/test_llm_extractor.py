@@ -64,10 +64,42 @@ def test_request_uses_json_mode_temperature_zero_and_sends_the_text():
     assert BY_ID["m-001"].text in req["messages"][1]["content"]
 
 
-def test_usage_and_latency_are_recorded():
+def test_run_records_tokens_latency_and_cost(monkeypatch):
+    monkeypatch.setenv("LLM_INPUT_PRICE_PER_M", "2")
+    monkeypatch.setenv("LLM_OUTPUT_PRICE_PER_M", "6")
     ex = llm(M001_GOOD)
     ex.extract(BY_ID["m-001"])
-    assert ex.last_usage.total_tokens == 1020 and ex.last_latency_s >= 0
+    run = ex.last_run
+    assert (run.status, run.model, run.input_tokens, run.output_tokens) == ("ok", "test-model", 900, 120)
+    assert run.input_cost_usd == pytest.approx(900 * 2 / 1e6)
+    assert run.output_cost_usd == pytest.approx(120 * 6 / 1e6)
+    assert run.total_cost_usd == pytest.approx(0.00252)
+    assert run.latency_s >= 0
+
+
+def test_without_prices_tokens_are_kept_and_cost_is_none():
+    ex = llm(M001_GOOD)
+    ex.extract(BY_ID["m-001"])
+    assert ex.last_run.input_tokens == 900 and ex.last_run.total_cost_usd is None
+
+
+def test_failed_call_does_not_report_the_previous_calls_metrics():
+    # Regression: a timeout used to leave the previous message's usage/latency in place.
+    ex = llm(M001_GOOD)
+    ex.extract(BY_ID["m-001"])
+    ex.client.error = TimeoutError("20s")
+    with pytest.raises(TimeoutError):
+        ex.extract(BY_ID["m-002"])
+    run = ex.last_run
+    assert run.status == "error" and run.input_tokens is None and run.latency_s is not None
+    assert run.error.startswith("TimeoutError")
+
+
+def test_malformed_output_is_recorded_as_paid_invalid_output():
+    ex = llm("not json")
+    with pytest.raises(ValueError):
+        ex.extract(BY_ID["m-001"])
+    assert ex.last_run.status == "invalid_output" and ex.last_run.input_tokens == 900
 
 
 def test_valid_output_is_parsed_into_a_candidate():
@@ -181,3 +213,55 @@ def test_with_a_key_the_llm_extractor_is_used(monkeypatch):
     ex = default_extractor()
     assert isinstance(ex, LlmExtractor) and ex.model == "qwen-test"
     assert ex.client.max_retries == 1 and ex.client.timeout == 20.0
+
+
+# --- llm_runs: every call is recorded with the message id ---------------------------
+
+def test_pipeline_records_one_run_per_llm_call(monkeypatch):
+    monkeypatch.setenv("LLM_INPUT_PRICE_PER_M", "2")
+    monkeypatch.setenv("LLM_OUTPUT_PRICE_PER_M", "6")
+    store = Store(":memory:")
+    ex = llm(M001_GOOD)
+    process_message(BY_ID["m-001"], store, ex)
+    (row,) = store.list_llm_runs()
+    assert row["message_id"] == "m-001" and row["status"] == "ok" and row["model"] == "test-model"
+    assert (row["input_tokens"], row["output_tokens"]) == (900, 120)
+    assert row["total_cost_usd"] == pytest.approx(0.00252)
+
+
+@pytest.mark.parametrize("content, error, status", [
+    (None, TimeoutError("20s"), "error"),
+    ("not json", None, "invalid_output"),
+    ('{"classification": "spam", "listings": []}', None, "unusable"),
+])
+def test_failed_llm_calls_are_recorded_too(content, error, status):
+    store = Store(":memory:")
+    result = process_message(BY_ID["m-001"], store, llm(content, error))
+    assert result.listings[0].source == "rules"  # fell back
+    (row,) = store.list_llm_runs("m-001")
+    assert row["status"] == status and row["error"]
+
+
+def test_rules_only_processing_records_no_runs():
+    store = Store(":memory:")
+    process_message(BY_ID["m-001"], store)
+    assert store.list_llm_runs() == []
+
+
+def test_reprocessing_a_stored_message_makes_no_new_call():
+    store = Store(":memory:")
+    ex = llm(M001_GOOD)
+    process_message(BY_ID["m-001"], store, ex)
+    process_message(BY_ID["m-001"], store, ex)
+    assert len(store.list_llm_runs()) == 1 and len(ex.client.requests) == 1
+
+
+def test_llm_summary_aggregates_runs(monkeypatch):
+    monkeypatch.setenv("LLM_INPUT_PRICE_PER_M", "2")
+    monkeypatch.setenv("LLM_OUTPUT_PRICE_PER_M", "6")
+    store = Store(":memory:")
+    process_message(BY_ID["m-001"], store, llm(M001_GOOD))
+    process_message(BY_ID["m-002"], store, llm(error=TimeoutError()))
+    s = store.llm_summary()
+    assert (s["calls"], s["ok"], s["input_tokens"]) == (2, 1, 900)
+    assert s["total_cost_usd"] == pytest.approx(0.00252)

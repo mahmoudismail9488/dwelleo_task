@@ -60,7 +60,18 @@ def run_process(path: str, db: str) -> int:
             print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False), flush=True)
             ok += 1
     _err(f"processed {ok} message(s), skipped {bad}")
+    if extractor.name == "llm":
+        _err(_llm_summary_line(store.llm_summary()))
     return 0
+
+
+def _llm_summary_line(s: dict) -> str:
+    calls = s["calls"] or 0
+    cost = (f"total ${s['total_cost_usd']:.4f}, mean ${s['mean_cost_usd']:.5f}/call"
+            if s["total_cost_usd"] else "cost n/a (set LLM_INPUT_PRICE_PER_M / LLM_OUTPUT_PRICE_PER_M)")
+    return (f"llm: {calls} call(s), {s['ok']} ok, {calls - (s['ok'] or 0)} failed | "
+            f"tokens in {s['input_tokens']} out {s['output_tokens']} | {cost} | "
+            f"latency mean {s['mean_latency_s']:.2f}s max {s['max_latency_s']:.2f}s")
 
 
 def main(argv: list[str] | None = None) -> int:

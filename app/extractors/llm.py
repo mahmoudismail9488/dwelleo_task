@@ -10,6 +10,7 @@ import json
 import os
 import re
 import time
+from dataclasses import dataclass
 
 from app.models import ExtractionCandidate, RawMessage
 
@@ -71,6 +72,40 @@ SCHEMA
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 
 
+@dataclass
+class LlmRun:
+    """Metrics of one LLM call, recorded in the llm_runs table (DECISIONS.md D11).
+
+    Tokens come from the response's `usage`; the provider returns no cost, so cost is
+    tokens × LLM_INPUT/OUTPUT_PRICE_PER_M (USD per 1M tokens), or None if prices aren't set.
+    status: "ok" | "error" (call failed) | "invalid_output" (paid, but malformed) |
+            "unusable" (valid JSON the pipeline can't use; set by the pipeline).
+    """
+
+    model: str
+    status: str
+    error: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    input_cost_usd: float | None = None
+    output_cost_usd: float | None = None
+    latency_s: float | None = None
+
+    @property
+    def total_cost_usd(self) -> float | None:
+        if self.input_cost_usd is None and self.output_cost_usd is None:
+            return None
+        return (self.input_cost_usd or 0.0) + (self.output_cost_usd or 0.0)
+
+
+def _price(var: str) -> float | None:
+    raw = os.environ.get(var, "").strip()
+    try:
+        return float(raw) if raw else None
+    except ValueError:
+        return None
+
+
 def parse_llm_json(content: str | None) -> ExtractionCandidate:
     """Parse model output strictly. Raises ValueError / ValidationError on anything malformed."""
     if not content or not content.strip():
@@ -99,23 +134,46 @@ class LlmExtractor:
                 max_retries=1,  # connection errors, 429, 5xx; malformed output is never retried
             )
         self.client = client
-        self.last_usage = None
-        self.last_latency_s: float | None = None
+        self.input_price_per_m = _price("LLM_INPUT_PRICE_PER_M")
+        self.output_price_per_m = _price("LLM_OUTPUT_PRICE_PER_M")
+        self.last_run: LlmRun | None = None
 
     def extract(self, message: RawMessage) -> ExtractionCandidate:
+        # A fresh record per call, so a failed call never reports the previous call's metrics.
+        run = self.last_run = LlmRun(model=self.model, status="error")
         started = time.perf_counter()
-        response = self.client.chat.completions.create(
-            model=self.model,
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Message:\n<<<\n{message.text}\n>>>"},
-            ],
-        )
-        self.last_latency_s = time.perf_counter() - started
-        self.last_usage = getattr(response, "usage", None)
-        return parse_llm_json(response.choices[0].message.content)
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                temperature=0,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Message:\n<<<\n{message.text}\n>>>"},
+                ],
+            )
+        except Exception as exc:
+            run.error = f"{type(exc).__name__}: {exc}"[:300]
+            raise
+        finally:
+            run.latency_s = time.perf_counter() - started
+
+        usage = getattr(response, "usage", None)
+        run.input_tokens = getattr(usage, "prompt_tokens", None)
+        run.output_tokens = getattr(usage, "completion_tokens", None)
+        if run.input_tokens is not None and self.input_price_per_m is not None:
+            run.input_cost_usd = run.input_tokens * self.input_price_per_m / 1_000_000
+        if run.output_tokens is not None and self.output_price_per_m is not None:
+            run.output_cost_usd = run.output_tokens * self.output_price_per_m / 1_000_000
+
+        try:
+            candidate = parse_llm_json(response.choices[0].message.content)
+        except Exception as exc:  # the call was paid for even though the output is unusable
+            run.status = "invalid_output"
+            run.error = f"{type(exc).__name__}: {exc}"[:300]
+            raise
+        run.status = "ok"
+        return candidate
 
 
 def default_extractor():

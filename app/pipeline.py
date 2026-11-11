@@ -37,7 +37,20 @@ def _listing_count(c: ExtractionCandidate) -> int:
     return len(c.listings) if c.classification == "listing" else 0
 
 
-def _extract(message: RawMessage, extractor: Extractor, fallback: Extractor):
+def _record_run(message: RawMessage, extractor: Extractor, store: Store, unusable: bool = False):
+    """Write the LLM call's metrics to llm_runs, whatever the outcome (D11)."""
+    run = getattr(extractor, "last_run", None)
+    if run is None:
+        return
+    if unusable:
+        run.status, run.error = "unusable", "valid JSON but unusable classification/listings"
+    try:
+        store.record_llm_run(message.id, run)
+    except Exception as exc:  # metrics must never break processing
+        log.warning("message %s: could not record llm run (%s)", message.id, exc)
+
+
+def _extract(message: RawMessage, extractor: Extractor, fallback: Extractor, store: Store):
     """Run the extractor; on any failure, use the fallback and say so.
 
     When the primary extractor succeeds, the (free, instant) fallback still runs as a
@@ -49,13 +62,16 @@ def _extract(message: RawMessage, extractor: Extractor, fallback: Extractor):
     rules = fallback.extract(message)
     try:
         candidate = extractor.extract(message)
-        if _usable(candidate):
+        usable = _usable(candidate)
+        _record_run(message, extractor, store, unusable=not usable)
+        if usable:
             extra = []
             if candidate.classification == "listing" and _listing_count(candidate) != _listing_count(rules):
                 extra.append("llm_listing_count_suspicious")
             return candidate, extractor.name, extra
         log.warning("message %s: %s output unusable, falling back", message.id, extractor.name)
     except Exception as exc:  # timeout, API error, malformed JSON, schema error…
+        _record_run(message, extractor, store)
         log.warning("message %s: %s failed (%s), falling back", message.id, extractor.name, exc)
     return rules, fallback.name, ["llm_fallback_used"]
 
@@ -73,7 +89,7 @@ def process_message(
 
     fallback = fallback or RuleExtractor()
     extractor = extractor or fallback
-    candidate, source, extra = _extract(message, extractor, fallback)
+    candidate, source, extra = _extract(message, extractor, fallback, store)
     candidate, listing_reasons, project_reasons = ground(candidate, message.text, message.sender)
 
     classification = candidate.classification

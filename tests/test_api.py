@@ -87,3 +87,13 @@ def test_default_db_is_created_lazily_from_env(tmp_path, monkeypatch):
     assert not db.exists()
     client.post("/messages", json=BY_ID["m-009"])
     assert db.exists()
+
+
+def test_llm_runs_endpoint_lists_calls_per_message():
+    from tests.test_llm_extractor import M001_GOOD, llm
+    client = TestClient(create_app(Store(":memory:"), extractor=llm(M001_GOOD)))
+    client.post("/messages", json=BY_ID["m-001"])
+    client.post("/messages", json=BY_ID["m-002"])
+    assert [r["message_id"] for r in client.get("/llm-runs").json()] == ["m-001", "m-002"]
+    (row,) = client.get("/llm-runs", params={"message_id": "m-002"}).json()
+    assert row["status"] == "ok" and row["input_tokens"] == 900 and "latency_s" in row

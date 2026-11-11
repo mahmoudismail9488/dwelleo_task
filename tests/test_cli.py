@@ -80,3 +80,20 @@ def test_installed_command_keeps_stdout_clean():
     lines = proc.stdout.splitlines()
     assert len(lines) == 10 and all(json.loads(l) for l in lines)
     assert "processed 10" in proc.stderr
+
+
+def test_llm_run_summary_goes_to_stderr(capsys, monkeypatch):
+    from tests.test_llm_extractor import M001_GOOD, llm
+    import app.cli as cli
+    monkeypatch.setenv("LLM_INPUT_PRICE_PER_M", "2")
+    monkeypatch.setenv("LLM_OUTPUT_PRICE_PER_M", "6")
+    monkeypatch.setattr(cli, "default_extractor", lambda: llm(M001_GOOD))
+    code, results, err = run(capsys, FIXTURES)
+    assert code == 0 and len(results) == 10  # stdout still pure JSON
+    assert "extractor: llm" in err
+    assert "llm: 10 call(s)" in err and "total $" in err and "latency mean" in err
+
+
+def test_no_llm_summary_in_rules_mode(capsys):
+    _, _, err = run(capsys, FIXTURES)
+    assert "llm:" not in err
