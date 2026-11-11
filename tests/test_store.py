@@ -87,3 +87,10 @@ def test_file_database_persists_across_instances(tmp_path):
     path = str(tmp_path / "db.sqlite")
     Store(path).save(msg("m-1"), MessageResult(message_id="m-1", classification="irrelevant"))
     assert Store(path).get_result("m-1").classification == "irrelevant"
+
+
+def test_missing_parent_folder_is_created(tmp_path):
+    # Regression: `normalizer process … --db data/listings.db` crashed on a fresh clone.
+    path = tmp_path / "data" / "nested" / "listings.db"
+    Store(str(path)).save(msg("m-1"), MessageResult(message_id="m-1", classification="irrelevant"))
+    assert path.exists()

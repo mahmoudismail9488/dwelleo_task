@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 from datetime import UTC, datetime
+from pathlib import Path
 
 from app.models import Listing, MessageResult, RawMessage
 
@@ -53,6 +54,8 @@ def _now() -> str:
 
 class Store:
     def __init__(self, path: str = ":memory:"):
+        if path != ":memory:":
+            Path(path).parent.mkdir(parents=True, exist_ok=True)  # sqlite won't create folders
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
