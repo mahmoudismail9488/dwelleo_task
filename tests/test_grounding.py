@@ -102,11 +102,15 @@ def test_tiny_district_name_cannot_match_inside_other_words():
     assert c.district is None
 
 
-def test_invented_phone_is_removed_but_sender_counts_as_grounded():
+def test_invented_phone_is_removed():
     c, reasons = g(contact_phone_text="0559999999")
     assert c.contact_phone_text is None and reasons == ["contact_phone_unverified"]
-    _, reasons = g("Villa for sale", SENDER, contact_phone_text="0551234567")
-    assert reasons == []
+
+
+def test_sender_number_does_not_count_as_stated_in_the_text():
+    # Regression (D9): the sender is an inference, only review.py may use it (with a flag).
+    c, reasons = g("Villa for sale", SENDER, contact_phone_text="0551234567")
+    assert c.contact_phone_text is None and reasons == ["contact_phone_unverified"]
 
 
 @pytest.mark.parametrize("field, value", [("purpose", "lease"), ("property_type", "castle"),

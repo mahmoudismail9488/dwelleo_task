@@ -106,11 +106,11 @@ def place_is_grounded(name: str | None, text: str, places) -> bool:
     return bool(named) and any(m.place in named for m in find_places(text, places))
 
 
-def phone_is_grounded(raw: str | None, text: str, sender: str | None) -> bool:
+def phone_is_grounded(raw: str | None, text: str) -> bool:
+    """The phone must be written in the message text. The sender's number does NOT count:
+    using it is an inference, done (and flagged) only by review.py (DECISIONS.md D9)."""
     phone = normalize_saudi_mobile(raw)
-    return phone is not None and (
-        phone in find_saudi_mobiles(text) or phone == normalize_saudi_mobile(sender)
-    )
+    return phone is not None and phone in find_saudi_mobiles(text)
 
 
 def _valid_enum(value: str | None, enum) -> bool:
@@ -154,7 +154,7 @@ def ground_listing(
         reject("city", "city_unverified")
     if c.district and not place_is_grounded(c.district, text, DISTRICTS):
         reject("district", "district_unverified")
-    if c.contact_phone_text and not phone_is_grounded(c.contact_phone_text, text, sender):
+    if c.contact_phone_text and not phone_is_grounded(c.contact_phone_text, text):
         reject("contact_phone_text", "contact_phone_unverified")
 
     return c.model_copy(update=upd), list(dict.fromkeys(reasons))
@@ -183,7 +183,7 @@ def ground_project(c: ProjectCandidate, text: str) -> tuple[ProjectCandidate, li
     for field in ("delivery_date", "payment_terms"):
         if getattr(c, field) and _squash(getattr(c, field)) not in _squash(text):
             reject(field, f"{field}_unverified")
-    if c.contact_phone_text and not phone_is_grounded(c.contact_phone_text, text, None):
+    if c.contact_phone_text and not phone_is_grounded(c.contact_phone_text, text):
         reject("contact_phone_text", "contact_phone_unverified")
     return c.model_copy(update=upd), list(dict.fromkeys(reasons))
 
