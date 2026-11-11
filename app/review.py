@@ -138,18 +138,7 @@ def build_listing(
     elif period is None and purpose == "rent" and (amount is not None or len(stated) > 1):
         reasons.append("price_period_missing")
 
-    # --- contact (sender fallback) ---
-    phone = normalize_saudi_mobile(c.contact_phone_text)
-    if c.contact_phone_text and phone is None:
-        reasons.append("contact_phone_invalid")
-    if phone is None and not c.contact_phone_text:
-        sender_phone = normalize_saudi_mobile(sender)
-        if sender_phone:
-            phone = sender_phone
-            inferred.append("contact_phone")
-            reasons.append("contact_phone_from_sender")
-        else:
-            reasons.append("contact_phone_missing")
+    phone = _contact(c.contact_phone_text, sender, reasons, inferred)
 
     return Listing(
         id=listing_id,
@@ -171,8 +160,28 @@ def build_listing(
     )
 
 
-def build_project(c: ProjectCandidate, extra_reasons: list[str] | None = None) -> Project:
+def _contact(text_phone: str | None, sender: str | None, reasons: list, inferred: list) -> str | None:
+    """Phone from the message text; otherwise the sender's number, flagged (PLAN.md §5).
+    Shared by listings and projects so the policy is the same for both."""
+    phone = normalize_saudi_mobile(text_phone)
+    if text_phone and phone is None:
+        reasons.append("contact_phone_invalid")
+    if phone is None and not text_phone:
+        sender_phone = normalize_saudi_mobile(sender)
+        if sender_phone:
+            phone = sender_phone
+            inferred.append("contact_phone")
+            reasons.append("contact_phone_from_sender")
+        else:
+            reasons.append("contact_phone_missing")
+    return phone
+
+
+def build_project(
+    c: ProjectCandidate, extra_reasons: list[str] | None = None, sender: str | None = None
+) -> Project:
     reasons = list(extra_reasons or [])
+    inferred: list[str] = []
     city = canonical_city(c.city)
     min_price = _num(c.min_price.amount) if c.min_price else None
     if c.name is None:
@@ -181,6 +190,7 @@ def build_project(c: ProjectCandidate, extra_reasons: list[str] | None = None) -
         reasons.append("city_missing")
     if min_price is None:
         reasons.append("price_missing")
+    phone = _contact(c.contact_phone_text, sender, reasons, inferred)
     return Project(
         name=c.name,
         city=city,
@@ -190,6 +200,7 @@ def build_project(c: ProjectCandidate, extra_reasons: list[str] | None = None) -
         max_bedrooms=c.max_bedrooms,
         delivery_date=c.delivery_date,
         payment_terms=c.payment_terms,
-        contact_phone=normalize_saudi_mobile(c.contact_phone_text),
+        contact_phone=phone,
         review_reasons=list(dict.fromkeys(reasons)),
+        inferred_fields=inferred,
     )

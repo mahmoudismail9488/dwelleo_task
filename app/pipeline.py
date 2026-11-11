@@ -99,7 +99,9 @@ def process_message(
             listing = build_listing(lc, f"{message.id}-{n}", source, message.sender, extra + reasons)
             listings.append(apply_dedup(listing, store.dedup_candidates(listing, message.id)))
     elif classification == "project":
-        project = build_project(candidate.project or ProjectCandidate(), extra + project_reasons)
+        project = build_project(
+            candidate.project or ProjectCandidate(), extra + project_reasons, message.sender
+        )
 
     result = MessageResult(
         message_id=message.id, classification=classification, listings=listings, project=project

@@ -160,6 +160,7 @@ class Project(BaseModel):
     payment_terms: str | None = None
     contact_phone: str | None = Field(default=None, pattern=r"^\+9665\d{8}$")
     review_reasons: list[str] = Field(default_factory=list)
+    inferred_fields: list[str] = Field(default_factory=list)
 
     @computed_field
     @property

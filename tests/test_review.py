@@ -181,11 +181,27 @@ def test_build_project_normalizes_price_and_names():
     p = build_project(ProjectCandidate(name="Al Waha Residences", city="جدة", min_price=P(780_000),
                                        min_bedrooms=1, max_bedrooms=4))
     assert (p.city, p.min_price, p.min_bedrooms, p.max_bedrooms) == ("Jeddah", 780_000, 1, 4)
-    assert p.review_reasons == [] and p.needs_review is False
+    assert p.review_reasons == ["contact_phone_missing"]  # no phone in text, no sender
+
+
+def test_project_with_phone_in_text_needs_no_review():
+    p = build_project(ProjectCandidate(name="Al Waha", city="Jeddah", min_price=P(780_000),
+                                       contact_phone_text="0551234567"), sender="+966512223333")
+    assert p.contact_phone == "+966551234567"
+    assert p.review_reasons == [] and p.needs_review is False and p.inferred_fields == []
+
+
+def test_project_without_phone_falls_back_to_sender_with_flag():
+    # Same policy as listings (PLAN.md §5): m-006 has no phone in its text.
+    p = build_project(ProjectCandidate(name="Al Waha", city="Jeddah", min_price=P(780_000)),
+                      sender="+966512223333")
+    assert p.contact_phone == "+966512223333"
+    assert p.review_reasons == ["contact_phone_from_sender"]
+    assert p.inferred_fields == ["contact_phone"]
 
 
 def test_project_missing_core_fields_is_flagged():
     p = build_project(ProjectCandidate(), ["delivery_date_unverified"])
     assert p.review_reasons == ["delivery_date_unverified", "project_name_missing",
-                                "city_missing", "price_missing"]
+                                "city_missing", "price_missing", "contact_phone_missing"]
     assert p.needs_review is True
