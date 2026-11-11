@@ -120,3 +120,14 @@ def test_llm_listings_for_a_buyer_request_are_discarded(store):
                                              listings=[ListingCandidate(property_type="villa")]))
     result = process_message(BY_ID["m-005"], store, fake)
     assert result.classification == "buyer_request" and result.listings == []
+
+
+def test_every_review_reason_produced_is_in_the_vocabulary(store):
+    from app.review import REVIEW_REASONS
+    produced = set()
+    for result in run_all(store).values():
+        for listing in result.listings:
+            produced |= set(listing.review_reasons)
+        if result.project:
+            produced |= set(result.project.review_reasons)
+    assert produced and produced <= REVIEW_REASONS, produced - REVIEW_REASONS
