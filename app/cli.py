@@ -11,6 +11,8 @@ import sys
 
 from pydantic import ValidationError
 
+from app.config import load_env
+from app.extractors.llm import default_extractor
 from app.models import RawMessage
 from app.pipeline import process_message
 from app.store import Store
@@ -31,6 +33,8 @@ def _err(text: str) -> None:
 
 def run_process(path: str, db: str) -> int:
     store = Store(db)
+    extractor = default_extractor()
+    _err(f"extractor: {extractor.name}" + ("" if extractor.name == "llm" else " (LLM_API_KEY not set)"))
     ok = bad = 0
     try:
         f = open(path, encoding="utf-8")
@@ -48,7 +52,7 @@ def run_process(path: str, db: str) -> int:
                 _err(f"line {line_no}: skipped, not a valid message: {str(exc).splitlines()[0]}")
                 continue
             try:
-                result = process_message(message, store)
+                result = process_message(message, store, extractor)
             except Exception as exc:  # never let one message kill the run
                 bad += 1
                 _err(f"line {line_no} ({message.id}): processing failed: {exc!r}")
@@ -62,6 +66,7 @@ def run_process(path: str, db: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(levelname)s %(message)s")
     args = build_parser().parse_args(argv)
+    load_env()
     if args.command == "process":
         return run_process(args.input, args.db)
     return 2

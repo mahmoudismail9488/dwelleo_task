@@ -15,7 +15,7 @@ REVIEW_REASONS = {
     "purpose_missing", "purpose_inferred", "property_type_missing", "city_missing",
     "city_inferred", "district_missing", "bedrooms_missing", "area_missing",
     "contact_phone_missing", "contact_phone_invalid", "contact_phone_from_sender",
-    "llm_fallback_used", "possible_duplicate",
+    "llm_fallback_used", "llm_listing_count_suspicious", "possible_duplicate",
     # cited prices (D6)
     "price_llm_mismatch", "price_interpreted",
     # projects

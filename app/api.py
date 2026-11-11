@@ -5,6 +5,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 
+from app.config import load_env
+from app.extractors.llm import default_extractor
 from app.models import MessageResult, RawMessage
 from app.pipeline import process_message
 from app.store import Store
@@ -17,19 +19,28 @@ def _default_store() -> Store:
     return Store(path)
 
 
-def create_app(store: Store | None = None) -> FastAPI:
+def create_app(store: Store | None = None, extractor=None) -> FastAPI:
     app = FastAPI(title="Listing Inbox Normalizer")
-    app.state.store = store  # the real DB file is opened lazily, on first request
+    # Both are created lazily on first request: the DB file and the LLM client.
+    app.state.store = store
+    app.state.extractor = extractor
 
     def get_store(request: Request) -> Store:
         if request.app.state.store is None:
+            load_env()
             request.app.state.store = _default_store()
         return request.app.state.store
+
+    def get_extractor(request: Request):
+        if request.app.state.extractor is None:
+            load_env()
+            request.app.state.extractor = default_extractor()
+        return request.app.state.extractor
 
     @app.post("/messages", response_model=MessageResult)
     def ingest_message(message: RawMessage, request: Request) -> MessageResult:
         """Process one raw message and return its result. Re-posting an id returns the stored result."""
-        return process_message(message, get_store(request))
+        return process_message(message, get_store(request), get_extractor(request))
 
     @app.get("/listings")
     def list_listings(

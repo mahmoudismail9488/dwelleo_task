@@ -33,18 +33,31 @@ def _usable(c: ExtractionCandidate) -> bool:
     return True
 
 
+def _listing_count(c: ExtractionCandidate) -> int:
+    return len(c.listings) if c.classification == "listing" else 0
+
+
 def _extract(message: RawMessage, extractor: Extractor, fallback: Extractor):
-    """Run the extractor; on any failure, use the fallback and say so."""
-    if extractor is not fallback:
-        try:
-            candidate = extractor.extract(message)
-            if _usable(candidate):
-                return candidate, extractor.name, []
-            log.warning("message %s: %s output unusable, falling back", message.id, extractor.name)
-        except Exception as exc:  # timeout, API error, malformed JSON, schema error…
-            log.warning("message %s: %s failed (%s), falling back", message.id, extractor.name, exc)
-        return fallback.extract(message), fallback.name, ["llm_fallback_used"]
-    return fallback.extract(message), fallback.name, []
+    """Run the extractor; on any failure, use the fallback and say so.
+
+    When the primary extractor succeeds, the (free, instant) fallback still runs as a
+    cross-check: a different listing count means the LLM may have split or merged
+    listings, so every listing is flagged `llm_listing_count_suspicious`.
+    """
+    if extractor is fallback:
+        return fallback.extract(message), fallback.name, []
+    rules = fallback.extract(message)
+    try:
+        candidate = extractor.extract(message)
+        if _usable(candidate):
+            extra = []
+            if candidate.classification == "listing" and _listing_count(candidate) != _listing_count(rules):
+                extra.append("llm_listing_count_suspicious")
+            return candidate, extractor.name, extra
+        log.warning("message %s: %s output unusable, falling back", message.id, extractor.name)
+    except Exception as exc:  # timeout, API error, malformed JSON, schema error…
+        log.warning("message %s: %s failed (%s), falling back", message.id, extractor.name, exc)
+    return rules, fallback.name, ["llm_fallback_used"]
 
 
 def process_message(
