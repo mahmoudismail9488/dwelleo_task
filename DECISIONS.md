@@ -113,3 +113,19 @@ The same applies to `price_per_sqm` and a project's `min_price`.
 **Alternative considered.** The agent's first version silently dropped ungrounded project fields, because the brief's contract defines review reasons only for listings.
 
 **Why (my call).** "Every flag gives a reason a human can read" should hold for everything we output. A project with an invented or missing starting price is as untrustworthy as a listing with one.
+
+---
+
+## D8 — Dedup uses exact matches, and conflicting facts block a match
+
+**Decision.** This amends PLAN.md §8:
+- **Strong match** (`duplicate_of` set, no flag): same contact phone, property type and district, **and the exact same price or the exact same area**.
+- **Weak match** (`duplicate_of` set plus `possible_duplicate`): a different or unknown phone, but the same purpose, type, district, bedrooms **and exact price**. This covers a different broker reposting.
+- **Conflicts block:** if both listings state `purpose`, `bedrooms`, `bathrooms`, `area_sqm` or `land_area_sqm` and the values differ, they are never duplicates. A field missing on one side doesn't block.
+- `duplicate_of` always points to the earliest original (the root of the chain). Listings from the same message are never compared with each other.
+
+**Alternatives considered.** PLAN.md §8 allowed price within 2% *or* area within 5%, and had no conflict check. The agent recommended keeping the tolerances because reposts often round prices.
+
+**Why (my call).** *Exact only:* this is consistent with D2. Any numeric gap means the listings disagree, and I'd rather miss a rounded repost than merge two different properties. *Conflicts block:* the same broker often posts several similar units in one district. Without the check, two Al Malqa villas at 3.2M (5BR and 6BR) would be merged.
+
+**Trade-off accepted.** Reposts with a rounded price *and* no matching area won't be detected and will appear as separate listings.
