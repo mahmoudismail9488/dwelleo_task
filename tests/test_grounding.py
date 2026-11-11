@@ -152,3 +152,53 @@ def test_ground_returns_reasons_per_listing_and_for_project():
     assert reasons == [[], ["bedrooms_unverified"]]
     assert project_reasons == []
     assert grounded.listings[1].bedrooms is None
+
+
+# --- enum values must be stated, not just valid (D13) --------------------------------
+
+M010 = "Available now: 1) Studio Al Yasmin 35K/yr 2) 2BR Al Yasmin 55K/yr 3) 3BR Hittin 80K/yr. Call 0520202020"
+
+
+def test_purpose_inferred_by_the_llm_is_rejected():
+    # Regression (D13): m-010 never says "rent"; the LLM inferred it from "/yr".
+    c, reasons = g(M010, None, purpose="rent")
+    assert c.purpose is None and reasons == ["purpose_unverified"]
+
+
+@pytest.mark.parametrize("text, purpose", [
+    ("Apartment for rent in Al Olaya", "rent"),
+    ("شقة للإيجار في الروضة", "rent"),
+    ("للبيع شقة في حي النرجس", "sale"),
+    ("Villa for sale in Malqa", "sale"),
+])
+def test_stated_purpose_passes(text, purpose):
+    c, reasons = g(text, None, purpose=purpose)
+    assert c.purpose == purpose and reasons == []
+
+
+def test_property_type_must_be_stated():
+    c, reasons = g("Apartment for rent in Al Olaya", None, property_type="villa")
+    assert c.property_type is None and reasons == ["property_type_unverified"]
+    c, reasons = g("شقة للإيجار", None, property_type="apartment")
+    assert c.property_type == "apartment" and reasons == []
+
+
+def test_type_guessed_from_bedrooms_is_rejected():
+    # "2BR" alone doesn't say apartment.
+    c, _ = g(M010, None, property_type="apartment")
+    assert c.property_type is None
+
+
+@pytest.mark.parametrize("text, period, ok", [
+    ("Apartment 85,000/yr", "yearly", True),
+    ("Apartment 85,000, 2 payments", "yearly", True),
+    ("شقة ٤٠ ألف سنويا", "yearly", True),
+    ("Apartment 4,500 monthly", "monthly", True),
+    ("Land 900 sqm (total 2.1M)", "total", True),
+    ("Apartment for rent 85,000", "yearly", False),
+    ("Villa for sale 3.2M", "total", False),
+])
+def test_price_period_must_be_stated(text, period, ok):
+    c, reasons = g(text, None, price_period=period)
+    assert (c.price_period == period) is ok
+    assert (reasons == []) is ok

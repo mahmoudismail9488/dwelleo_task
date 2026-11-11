@@ -8,6 +8,7 @@ listing gets `<field>_unverified`. Nothing is ever *added* here.
 import re
 from decimal import Decimal, InvalidOperation
 
+from app.extractors.rules import _RENT, _SALE, _TYPES
 from app.gazetteer import CITIES, DISTRICTS, find_places, fold
 from app.models import (
     ExtractionCandidate,
@@ -117,6 +118,25 @@ def _valid_enum(value: str | None, enum) -> bool:
     return value is None or value in {e.value for e in enum}
 
 
+# Words that state an enum value. Purpose and type reuse the rule extractor's keyword lists.
+_STATED_CUES: dict[str, dict[str, str]] = {
+    "purpose": {"sale": _SALE, "rent": _RENT},
+    "property_type": dict(_TYPES),
+    "price_period": {
+        "yearly": r"/\s*(?:yr|year|y)\b|per year|a year|yearly|annual|سنوي|بالسنه|\d+\s*(?:payments|installments|دفعات)|دفعتين",
+        "monthly": r"/\s*(?:mo|month)\b|per month|a month|monthly|شهري|بالشهر",
+        "total": r"\btotal\b|اجمالي",
+    },
+}
+
+
+def enum_is_stated(field: str, value: str, text: str) -> bool:
+    """True if the message contains a word that states this value (e.g. "for rent" for rent).
+    A valid value with no such word is the extractor's inference, not data (D13)."""
+    pattern = _STATED_CUES.get(field, {}).get(value)
+    return bool(pattern and re.search(pattern, fold(text)))
+
+
 def ground_listing(
     c: ListingCandidate, text: str, sender: str | None
 ) -> tuple[ListingCandidate, list[str]]:
@@ -127,8 +147,10 @@ def ground_listing(
         upd[field] = value
         reasons.append(reason)
 
+    # Enum fields: a valid value AND a word in the message that states it (D13).
     for field, enum in (("purpose", Purpose), ("property_type", PropertyType), ("price_period", PricePeriod)):
-        if not _valid_enum(getattr(c, field), enum):
+        value = getattr(c, field)
+        if not _valid_enum(value, enum) or (value is not None and not enum_is_stated(field, value, text)):
             reject(field, f"{field}_unverified")
 
     if c.bedrooms is not None and not number_is_grounded(c.bedrooms, text, _BEDROOM_WORDS):
