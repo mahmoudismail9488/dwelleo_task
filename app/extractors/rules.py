@@ -7,8 +7,8 @@ field stays None; the pipeline then adds the review reason.
 import re
 
 from app.gazetteer import AR_LETTERS, CITIES, DISTRICTS, find_places, fold, lookup_district
-from app.models import ExtractionCandidate, ListingCandidate, ProjectCandidate, RawMessage
-from app.textnorm import find_saudi_mobiles
+from app.models import ExtractionCandidate, ListingCandidate, PriceMention, ProjectCandidate, RawMessage
+from app.textnorm import find_saudi_mobiles, parse_amount
 
 # --- Classification (precedence: buyer > project > listing > irrelevant) -------
 
@@ -139,8 +139,20 @@ def _areas(folded: str) -> tuple[float | None, float | None, list[tuple[int, int
     return pick(built), pick(land), spans
 
 
+def _bedrooms(folded: str) -> int | None:
+    n = _single_int(_BEDROOM_RE, folded)
+    if n is not None:
+        return n
+    # Arabic number words without digits: غرفتين = two rooms, غرفة نوم = one bedroom.
+    if re.search(r"غرفتين|غرفتان", folded):
+        return 2
+    if re.search(r"غرفه\s*نوم", folded) and not re.search(r"\d\s*غرف", folded):
+        return 1
+    return None
+
+
 def _prices(folded: str, original: str, masked: list[tuple[int, int]]):
-    """Returns (price_text, price_per_sqm_text, period). Raw text, never computed."""
+    """Returns (price_texts, price_per_sqm_text, period). Raw text, never computed."""
     per_sqm_text = None
     per = list(_PER_SQM_RE.finditer(folded))
     if per:
@@ -164,24 +176,27 @@ def _prices(folded: str, original: str, masked: list[tuple[int, int]]):
             continue
         candidates.append((original[s:e].strip(), e))
 
-    price_text, period = None, None
-    if candidates:
-        from app.textnorm import parse_amount  # local: keep module import light
-
-        values = {parse_amount(t) for t, _ in candidates}
-        if len(values) == 1:
-            price_text, end = candidates[0]
-            tail = folded[end: end + 12]
-            if _YEARLY.match(tail):
-                period = "yearly"
-            elif _MONTHLY.match(tail):
-                period = "monthly"
-        # several different amounts: the extractor can't tell which one is the price → None
+    # One text per distinct amount ("3.2M" and "3,200,000" are the same price).
+    price_texts: list[str] = []
+    seen: set = set()
+    periods: set[str] = set()
+    for text, end in candidates:
+        value = parse_amount(text)
+        if value is None or value in seen:
+            continue
+        seen.add(value)
+        price_texts.append(text)
+        tail = folded[end: end + 12]
+        if _YEARLY.match(tail):
+            periods.add("yearly")
+        elif _MONTHLY.match(tail):
+            periods.add("monthly")
+    period = periods.pop() if len(periods) == 1 else None
     if period is None and _PAYMENTS.search(folded):
         period = "yearly"  # rent paid in N payments is a yearly rent (PLAN.md §5)
     if period is None and re.search(r"\btotal\b|اجمالي", folded):
         period = "total"
-    return price_text, per_sqm_text, period
+    return price_texts, per_sqm_text, period
 
 
 def _city(text: str) -> str | None:
@@ -250,20 +265,20 @@ class RuleExtractor:
             masked += [m.span() for m in re.finditer(r"(?:\+|00)?\d[\d\s\-]{8,}\d", seg_folded)
                        if find_saudi_mobiles(seg_folded[m.start(): m.end()])]
             built, land, area_spans = _areas(seg_folded)
-            price_text, per_sqm_text, period = _prices(seg_folded, seg, masked + area_spans)
+            price_texts, per_sqm_text, period = _prices(seg_folded, seg, masked + area_spans)
             seg_phones = find_saudi_mobiles(seg)
             listings.append(ListingCandidate(
                 purpose=_purpose(seg_folded) or shared_purpose,
                 property_type=_property_type(seg_folded),
                 city=_city(seg) or shared_city,
                 district=_district(seg, shared_city) or header_district,
-                bedrooms=_single_int(_BEDROOM_RE, seg_folded),
+                bedrooms=_bedrooms(seg_folded),
                 bathrooms=_single_int(_BATH_RE, seg_folded),
                 built_up_area_sqm=built,
                 land_area_sqm=land,
-                price_text=price_text,
+                prices=[PriceMention(quote=t) for t in price_texts],
                 price_period=period,
-                price_per_sqm_text=per_sqm_text,
+                price_per_sqm=PriceMention(quote=per_sqm_text) if per_sqm_text else None,
                 contact_phone_text=seg_phones[0] if seg_phones else shared_phone,
             ))
         return ExtractionCandidate(classification="listing", listings=listings)
@@ -296,7 +311,7 @@ class RuleExtractor:
             name=name,
             city=_city(text),
             district=None,
-            min_price_text=min_price,
+            min_price=PriceMention(quote=min_price) if min_price else None,
             min_bedrooms=min_bed,
             max_bedrooms=max_bed,
             delivery_date=delivery,

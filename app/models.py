@@ -55,6 +55,20 @@ class PricePeriod(StrEnum):
 
 # --- Extractor candidates (untrusted) ------------------------------------------
 
+class PriceMention(BaseModel):
+    """A price as cited from the message (D6).
+
+    `quote` is the exact text from the message ("3.2M", "950 ألف", "ثلاثة ملايين").
+    `amount` is the extractor's reading of it; the rules extractor leaves it None and lets
+    the grounding step parse the quote. Grounding always checks the quote against the text.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    quote: str = Field(min_length=1)
+    amount: float | None = None
+
+
 class ListingCandidate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -66,9 +80,11 @@ class ListingCandidate(BaseModel):
     bathrooms: int | None = None
     built_up_area_sqm: float | None = None
     land_area_sqm: float | None = None
-    price_text: str | None = None          # raw, e.g. "3.2M", "950 ألف", "85,000"
+    # Every distinct price stated for this listing.
+    # More than one → the pipeline flags price_contradiction and keeps them all (D2).
+    prices: list[PriceMention] = Field(default_factory=list)
     price_period: str | None = None
-    price_per_sqm_text: str | None = None  # raw, e.g. "2,500"
+    price_per_sqm: PriceMention | None = None
     contact_phone_text: str | None = None  # raw, as written in the message
 
 
@@ -78,7 +94,7 @@ class ProjectCandidate(BaseModel):
     name: str | None = None
     city: str | None = None
     district: str | None = None
-    min_price_text: str | None = None
+    min_price: PriceMention | None = None
     min_bedrooms: int | None = None
     max_bedrooms: int | None = None
     delivery_date: str | None = None
@@ -143,6 +159,12 @@ class Project(BaseModel):
     delivery_date: str | None = None
     payment_terms: str | None = None
     contact_phone: str | None = Field(default=None, pattern=r"^\+9665\d{8}$")
+    review_reasons: list[str] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def needs_review(self) -> bool:
+        return bool(self.review_reasons)
 
 
 class MessageResult(BaseModel):

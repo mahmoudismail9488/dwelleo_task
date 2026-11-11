@@ -15,6 +15,10 @@ SAMPLES = {
 }
 
 
+def quotes(listing):
+    return [p.quote for p in listing.prices]
+
+
 def extract(text_or_id: str):
     msg = SAMPLES.get(text_or_id) or RawMessage(id="t", text=text_or_id)
     return RuleExtractor().extract(msg)
@@ -40,7 +44,7 @@ def test_m001_villa_with_land_and_built_up_area():
     assert (l.purpose, l.property_type, l.city, l.district) == ("sale", "villa", "Riyadh", "Al Malqa")
     assert (l.bedrooms, l.bathrooms) == (5, 6)
     assert (l.built_up_area_sqm, l.land_area_sqm) == (380, 450)
-    assert l.price_text == "3.2M"
+    assert quotes(l) == ["3.2M"]
     assert l.contact_phone_text == "+966551234567"
 
 
@@ -48,7 +52,7 @@ def test_m002_arabic_listing_with_arabic_digits():
     (l,) = extract("m-002").listings
     assert (l.purpose, l.property_type, l.city, l.district) == ("sale", "apartment", "Riyadh", "Al Narjis")
     assert (l.bedrooms, l.bathrooms, l.built_up_area_sqm) == (3, 2, 165)
-    assert l.price_text == "٩٥٠ ألف"
+    assert quotes(l) == ["٩٥٠ ألف"]
     assert l.contact_phone_text == "+966509876543"
 
 
@@ -60,7 +64,7 @@ def test_m003_repost_reads_same_property_facts_as_m001():
 
 def test_m004_rent_yearly_but_no_city_and_no_phone_stated():
     (l,) = extract("m-004").listings
-    assert (l.purpose, l.price_text, l.price_period) == ("rent", "85,000", "yearly")
+    assert (l.purpose, quotes(l), l.price_period) == ("rent", ["85,000"], "yearly")
     assert l.district == "Al Olaya"
     assert l.city is None               # not stated; ambiguous district → no inference here
     assert l.contact_phone_text is None  # sender fallback is the pipeline's job
@@ -71,7 +75,7 @@ def test_m006_project_keeps_ranges_and_starting_price_out_of_listings():
     assert p.name == "Al Waha Residences"
     assert p.city == "Jeddah"
     assert (p.min_bedrooms, p.max_bedrooms) == (1, 4)
-    assert p.min_price_text == "780K"
+    assert p.min_price.quote == "780K"
     assert p.delivery_date == "Q4 2028"
     assert p.payment_terms == "10% down payment"
 
@@ -79,21 +83,21 @@ def test_m006_project_keeps_ranges_and_starting_price_out_of_listings():
 def test_m007_land_keeps_both_conflicting_price_figures():
     (l,) = extract("m-007").listings
     assert l.property_type == "land"
-    assert l.price_text == "2.1M"
-    assert l.price_per_sqm_text == "2,500"
+    assert quotes(l) == ["2.1M"]
+    assert l.price_per_sqm.quote == "2,500"
     assert l.built_up_area_sqm == 900  # unlabeled area; pipeline maps it to land area for land
 
 
 def test_m008_price_on_request_has_no_price():
     (l,) = extract("m-008").listings
     assert (l.purpose, l.property_type, l.city, l.bedrooms) == ("rent", "apartment", "Jeddah", 3)
-    assert l.price_text is None
+    assert quotes(l) == []
 
 
 def test_m010_split_into_three_with_shared_phone_and_own_fields():
     ls = extract("m-010").listings
     assert [l.district for l in ls] == ["Al Yasmin", "Al Yasmin", "Hittin"]
-    assert [l.price_text for l in ls] == ["35K", "55K", "80K"]
+    assert [quotes(l) for l in ls] == [["35K"], ["55K"], ["80K"]]
     assert {l.price_period for l in ls} == {"yearly"}
     assert {l.contact_phone_text for l in ls} == {"+966520202020"}
     assert ls[0].property_type == "studio"
@@ -105,23 +109,39 @@ def test_m010_split_into_three_with_shared_phone_and_own_fields():
 def test_arabic_comma_does_not_break_suffix_or_city():
     # Regression (D5): "ألف،" lost its suffix → price read as 950 SAR instead of 950,000.
     (l,) = extract("شقة للبيع في الرياض، السعر ٩٥٠ ألف، للتواصل ٠٥٥١٢٣٤٥٦٧").listings
-    assert l.price_text == "٩٥٠ ألف"
+    assert quotes(l) == ["٩٥٠ ألف"]
     assert l.city == "Riyadh"
 
 
 # --- Refuses to guess ------------------------------------------------------------
 
+def test_two_different_prices_are_both_kept_for_review():
+    (l,) = extract("Villa for sale in Al Malqa, price 3.2M, now 2.9M").listings
+    assert quotes(l) == ["3.2M", "2.9M"]
+
+
+def test_same_price_written_twice_is_one_price():
+    (l,) = extract("Villa for sale 3.2M SAR (3,200,000)").listings
+    assert quotes(l) == ["3.2M"]
+
+
+def test_bare_decimal_without_suffix_is_not_a_price():
+    assert quotes(extract("Villa for sale price 2.5 call 0551234567").listings[0]) == []
+
+
 @pytest.mark.parametrize(
-    "text",
-    ["Villa for sale 3M or best offer 2.8M", "Villa for sale price 2.5 call 0551234567"],
+    "text, expected",
+    [("شقة للبيع غرفتين وصالة السعر 650 ألف", 2),
+     ("استوديو غرفة نوم واحدة للإيجار", 1),
+     ("شقة ٣ غرف نوم للبيع", 3)],
 )
-def test_ambiguous_price_is_left_empty(text):
-    assert extract(text).listings[0].price_text is None
+def test_arabic_bedroom_words(text, expected):
+    assert extract(text).listings[0].bedrooms == expected
 
 
 def test_years_and_percentages_are_not_prices():
     (l,) = extract("Villa for sale built 2019, 5% discount, 2M SAR").listings
-    assert l.price_text == "2M"
+    assert quotes(l) == ["2M"]
 
 
 def test_two_cities_means_no_city():

@@ -131,10 +131,10 @@ def test_unknown_classification_is_rejected():
 
 def test_candidate_keeps_unknown_enum_strings_for_per_field_flagging():
     cand = ExtractionCandidate.model_validate(
-        {"classification": "listing", "listings": [{"property_type": "castle", "price_text": "3.2M"}]}
+        {"classification": "listing", "listings": [{"property_type": "castle", "prices": [{"quote": "3.2M"}]}]}
     )
     assert cand.listings[0].property_type == "castle"
-    assert cand.listings[0].price_text == "3.2M"
+    assert cand.listings[0].prices[0].quote == "3.2M"
 
 
 def test_candidate_with_wrong_types_is_rejected_as_malformed():
