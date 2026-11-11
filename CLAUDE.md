@@ -26,23 +26,23 @@ How to propose: give 2–3 options, your recommendation, and the trade-off, then
 
 ## Commands
 
-Created by the scaffold step. Each one is required by `task.md`: one command runs the tests and one starts the service.
+Each one is required by `task.md`: one command runs the tests and one starts the service.
 ```bash
-uv sync                                     # install
-make test                                   # run the full test suite (offline, no API key)
-make serve                                  # start the HTTP API
-uv run normalizer process messages.jsonl    # CLI: one JSON result per message on stdout
+uv sync                                                  # install
+make test                                                # full suite (offline, no API key, never reads .env)
+make serve                                               # HTTP API on :8000
+uv run normalizer process tests/fixtures/messages.jsonl  # CLI: one JSON result per message on stdout
 ```
 
 ## Architecture
 
 ```
-text → pre-normalize → Extractor (LlmExtractor | RuleExtractor) → validate+ground → normalize → review flags → dedup → store
+message → Extractor (llm | rules) → grounding.py → review.py → dedup.py → store.py (messages, listings, llm_runs)
 ```
-- `app/extractors/`: `LlmExtractor` is used when `LLM_API_KEY` is set. `RuleExtractor` is the always-available fallback, and also takes over for a message when the LLM fails (`llm_fallback_used`).
-- Everything **after** the extractor is shared and deterministic. That is where "never invent data" is enforced (`grounding.py`, `review.py`). Never put trust logic inside an extractor.
-- `app/pipeline.py: process_message()` is the single entry point used by both `cli.py` and `api.py`.
-- Field policies (areas, studio, city inference, price conflicts, sender phone) are in `PLAN.md` §5. Follow them exactly.
+- `app/pipeline.py: process_message()` is the single entry point for `cli.py` and `api.py`. It falls back to rules on any LLM failure (`llm_fallback_used`), cross-checks the listing count against rules, and records every LLM call in `llm_runs`.
+- `app/config.py` loads `.env` if present (the shell wins). No key → rules. `tests/conftest.py` blocks `.env` in tests: keep it that way.
+- Extractors only report what's stated. Trust logic lives **after** them: `grounding.py` (every value must be in the text; prices are cited `{quote, amount}`, D6) and `review.py` (policies, inferences, the `REVIEW_REASONS` vocabulary). Never put trust logic inside an extractor.
+- Field policies: `PLAN.md` §5, as amended in `DECISIONS.md` (D2, D4, D6–D11 changed parts of the plan). Where they differ, `DECISIONS.md` wins.
 
 ## Do / Don't
 
@@ -51,7 +51,9 @@ text → pre-normalize → Extractor (LlmExtractor | RuleExtractor) → validate
 - ✅ Every LLM-returned value must pass the grounding check (it appears in the digit-normalized text). If it doesn't, it becomes `null` + `<field>_unverified`.
 - ❌ Never print anything but result JSON to **stdout** in the CLI. Logs and errors go to stderr. A malformed input line must not crash the run.
 - ✅ `json.dumps(..., ensure_ascii=False)` and `encoding="utf-8"` everywhere Arabic text flows.
-- ❌ Tests never hit the network or need a key. Use the fake LLM client and the fixtures in `tests/fixtures/`.
+- ❌ Tests never hit the network or need a key. Use `FakeClient` / `llm()` from `tests/test_llm_extractor.py` and the fixtures in `tests/fixtures/`.
+- ✅ A new review reason must be added to `REVIEW_REASONS` in `app/review.py` (a test checks the vocabulary).
+- ✅ Grounded means "in the message text", with no exceptions. The sender's number is an inference (D9).
 - ✅ Tests assert **behaviour**: exact output values and review reasons, not "it ran".
 - ❌ Buyer requests and irrelevant messages return `listings: []` even when they contain prices (m-005). Projects return `listings: []` plus a `project` object.
 - ❌ Don't edit `PLAN.md`. It's frozen as the pre-implementation plan. Record changes in `DECISIONS.md`.
@@ -60,11 +62,14 @@ text → pre-normalize → Extractor (LlmExtractor | RuleExtractor) → validate
 ## Gotchas
 
 - Arabic-Indic digits (`٠-٩`) and Persian digits (`۰-۹`) must be converted before any regex or grounding check.
+- Arabic word boundaries: use `AR_LETTERS` from `gazetteer.py`, never the whole `؀-ۿ` block, because it contains the Arabic comma `،` (D5).
 - Saudi mobiles normalize to `+9665XXXXXXXX` from `05…`, `5…`, `966…`, `00966…`, `+966 5X XXX XXXX`.
 - The CLI uses an in-memory SQLite per run by default (dedup within the file). `--db path` persists.
+- The LLM API returns tokens, not cost: cost = tokens × `LLM_INPUT/OUTPUT_PRICE_PER_M` from env.
 
 ## More detail
 
+- Setup, endpoints, cost/latency, limitations: `README.md`
 - Brief and output contract: `task.md`
 - Plan, field policies, review-reason vocabulary, dedup rules: `PLAN.md`
 - Decisions and agent mistakes: `DECISIONS.md`
