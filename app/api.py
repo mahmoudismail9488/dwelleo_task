@@ -1,7 +1,6 @@
 """HTTP API. Every endpoint goes through the same pipeline and store as the CLI."""
 
 import os
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 
@@ -13,10 +12,7 @@ from app.store import Store
 
 
 def _default_store() -> Store:
-    path = os.environ.get("DB_PATH", "./data/listings.db")
-    if path != ":memory:":
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-    return Store(path)
+    return Store(os.environ.get("DB_PATH", "./data/listings.db"))
 
 
 def create_app(store: Store | None = None, extractor=None) -> FastAPI:
@@ -36,6 +32,11 @@ def create_app(store: Store | None = None, extractor=None) -> FastAPI:
             load_env()
             request.app.state.extractor = default_extractor()
         return request.app.state.extractor
+
+    @app.get("/", include_in_schema=False)
+    def root() -> dict:
+        """Liveness check; the interactive API docs are at /docs."""
+        return {"status": "success"}
 
     @app.post("/messages", response_model=MessageResult)
     def ingest_message(message: RawMessage, request: Request) -> MessageResult:

@@ -97,3 +97,16 @@ def test_llm_runs_endpoint_lists_calls_per_message():
     assert [r["message_id"] for r in client.get("/llm-runs").json()] == ["m-001", "m-002"]
     (row,) = client.get("/llm-runs", params={"message_id": "m-002"}).json()
     assert row["status"] == "ok" and row["input_tokens"] == 900 and "latency_s" in row
+
+
+def test_root_reports_success(client):
+    r = client.get("/")
+    assert r.status_code == 200 and r.json() == {"status": "success"}
+
+
+def test_project_message_gets_sender_phone_with_flag(client):
+    body = client.post("/messages", json=BY_ID["m-006"]).json()
+    assert body["listings"] == []
+    assert body["project"]["contact_phone"] == "+966512223333"
+    assert body["project"]["review_reasons"] == ["contact_phone_from_sender"]
+    assert body["project"]["needs_review"] is True
