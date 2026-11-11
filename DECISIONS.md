@@ -67,3 +67,15 @@ Example m-007: *"900 sqm, SAR 2,500/sqm (total 2.1M)"*. 900 × 2,500 = **2,250,0
 **Why (my call).** In a price, `2.500` meaning 2.5 riyals is practically impossible, so the thousands reading is the realistic one. Option 1 produced a 1000× wrong price, and option 2 discarded good data. The rule still returns `None` wherever a guess would be needed (`2.5` with no suffix), so it stays within "never invent data".
 
 **Trade-off accepted.** A writer who really meant 2.5 by `2.500` is misread, which is implausible for a price. The rule applies to prices only; areas like `165.5 م²` are parsed with a normal decimal point.
+
+---
+
+## D5 — [Agent mistake] Arabic comma treated as a letter, so 950 ألف became 950 SAR
+
+**What happened.** For word boundaries in Arabic text, the agent used the whole Arabic Unicode block (`؀-ۿ`) as "letters", in both the district/city list and the price-suffix and area-unit patterns. That block also contains punctuation: the Arabic comma `،`, the question mark `؟` and the semicolon `؛`. So in `السعر ٩٥٠ ألف، للتواصل…`, the comma right after `ألف` made the suffix look like part of a longer word. The suffix was dropped and the price was read as **950 SAR instead of 950,000**. In the same message, `الرياض،` wasn't recognized as a city.
+
+**How it was caught.** A new test, `حي النرجس، الرياض`, failed for the district list. The extractor had passed sample m-002 anyway, because the fallback `حي X` pattern happened to rescue the district, and that masked the bug in the sample. Following the failure into `rules.py` turned up the much worse price case, which was then confirmed with a targeted probe before any fix.
+
+**What changed.** Boundaries now use Arabic *letters* only (`AR_LETTERS = ء-يٮ-ۓ`, shared from `gazetteer.py`). Regression tests cover a price followed by `،`, cities followed by `،` and `؟`, and districts followed by `،`.
+
+**Lesson.** Sample messages that pass can hide a bug when a fallback path covers for the main one. Arabic punctuation needs its own test cases, the same way hostile neighbours did for D3.
