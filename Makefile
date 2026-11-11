@@ -1,13 +1,12 @@
 .PHONY: install test serve
 
-# Load .env for the service if it exists. Tests never load it: they must run offline, no key.
-ENV_FILE := $(if $(wildcard .env),--env-file .env,)
-
 install:
 	uv sync
 
+# Offline, no API key: tests never read .env (tests/conftest.py).
 test:
 	uv run pytest -q
 
+# Reads .env itself if present (app/config.py); without it, uses the rule extractor.
 serve:
-	uv run $(ENV_FILE) uvicorn app.api:app --host 127.0.0.1 --port 8000
+	uv run uvicorn app.api:app --host 127.0.0.1 --port 8000
