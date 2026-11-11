@@ -39,6 +39,8 @@ Example m-007: *"900 sqm, SAR 2,500/sqm (total 2.1M)"*. 900 × 2,500 = **2,250,0
 
 **Trade-off accepted.** These listings can't be priced or sorted by price until someone reviews them.
 
+**Addendum (step 5).** *No tolerance:* the stated total has to equal per-sqm × area exactly. The agent proposed a 1% allowance for broker rounding (875 × 2,500 = 2,187,500 against "total 2.2M"). I rejected it: any gap means two numbers disagree, and a human should look. The same treatment applies to two different stated prices in one listing ("price 3.2M, now 2.9M"): both are kept and flagged `price_contradiction`.
+
 ---
 
 ## D3 — [Agent mistake] Phone finder swallowed neighbouring numbers
@@ -79,3 +81,35 @@ Example m-007: *"900 sqm, SAR 2,500/sqm (total 2.1M)"*. 900 × 2,500 = **2,250,0
 **What changed.** Boundaries now use Arabic *letters* only (`AR_LETTERS = ء-يٮ-ۓ`, shared from `gazetteer.py`). Regression tests cover a price followed by `،`, cities followed by `،` and `؟`, and districts followed by `،`.
 
 **Lesson.** Sample messages that pass can hide a bug when a fallback path covers for the main one. Arabic punctuation needs its own test cases, the same way hostile neighbours did for D3.
+
+---
+
+## D6 — The LLM may give a price number, but it must cite it
+
+**Decision.** Each price an extractor reports is a `PriceMention {quote, amount}`: the exact text from the message and the extractor's reading of it. Grounding resolves it:
+
+| Case | Result |
+|---|---|
+| Quote not in the message | dropped, `price_unverified` |
+| Our parser reads the quote and it matches `amount` (or `amount` is empty, as with the rules extractor) | accepted |
+| Our parser reads the quote but the LLM's `amount` differs (cites "3.2M", says 2,300,000) | **our parsed value is used**, `price_llm_mismatch` |
+| Our parser can't read the quote ("ثلاثة ملايين", "3 million and a half") and an amount is given | **the LLM's amount is kept**, `price.amount` listed in `inferred_fields`, `price_interpreted` |
+| Our parser can't read it and no amount is given | dropped, `price_unverified` |
+
+The same applies to `price_per_sqm` and a project's `min_price`.
+
+**Alternative considered.** The agent's first design: the extractor returns only the raw text, and anything it can't quote verbatim, or that our parser can't read, is rejected.
+
+**Why (my call).** The LLM is most useful exactly where regex fails: prices written in words, or unusual formats. A required citation keeps it honest. The quote must exist in the message, so the number can't be made up from nothing, and wherever our parser *can* read the quote, our deterministic value wins. Every case where we rely on the LLM's reading is flagged, so a human confirms it, and the reviewer sees the quote next to the number.
+
+**Trade-off accepted.** An LLM that misreads a price written in words gets through to review with a wrong number attached, but it is always flagged `price_interpreted` and never silently trusted.
+
+---
+
+## D7 — Projects carry their own review reasons
+
+**Decision.** `Project` has `review_reasons` and a calculated `needs_review`, the same as listings: `<field>_unverified` when grounding drops a value, plus `project_name_missing`, `city_missing` and `price_missing` when those core fields are absent.
+
+**Alternative considered.** The agent's first version silently dropped ungrounded project fields, because the brief's contract defines review reasons only for listings.
+
+**Why (my call).** "Every flag gives a reason a human can read" should hold for everything we output. A project with an invented or missing starting price is as untrustworthy as a listing with one.
