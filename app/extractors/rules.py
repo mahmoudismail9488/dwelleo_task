@@ -15,6 +15,9 @@ from app.textnorm import find_saudi_mobiles, parse_amount
 _BUYER = [
     r"looking for", r"\bwanted\b", r"want to buy", r"searching for", r"\bbudget\b",
     r"\bcash buyer\b", r"\bneed (?:a|an)\b", r"مطلوب", r"ابحث عن", r"نبحث عن", r"ميزانيه",
+    r"\bmy client\b", r"\bclient (?:is )?(?:ready|looking)",
+    # a question asking for a property ("Any 4BR villas in Al Malqa under 3M?"), not "Any questions?"
+    r"\bany\b[^.?!\n]*(?:villas?|apartments?|flats?|studios?|lands?|plots?|\d\s*br\b|شقه|شقق|فيلا|فلل|ارض)[^.?!\n]*\?",
 ]
 _PROJECT = [
     r"off[\s\-]?plan", r"new launch", r"\blaunch(?:ing)?\b", r"\bhandover\b", r"payment plan",
@@ -55,6 +58,11 @@ _AREA_RE = re.compile(rf"(?<![/\d])(\d[\d,]*(?:\.\d+)?)\s*{_AREA_UNIT}")
 _PER_SQM_RE = re.compile(
     rf"(?:sar|ريال)?\s*({_NUM})\s*(?:sar|ريال)?\s*(?:/\s*|per\s+|لل)(?:sqm|sq\.?\s?m|m2|m²|م²|متر|م\b)"
 )
+# Arabic order, unit before the number: "سعر المتر ٢٠٠٠ ريال", "المتر بـ 2500"
+_PER_SQM_AR_RE = re.compile(rf"(?:سعر المتر|المتر)\s*(?:ب\S?|:)?\s*({_NUM})")
+_CURRENCY_PREFIX_RE = re.compile(r"^\s*(?:sar|riyals?|ريال|ر\.س)\.?")
+_COMMA_GROUPED_RE = re.compile(r"\d{1,3}(?:,\d{3})+")
+_DISTANCE_AFTER = re.compile(r"^\s*(?:km|kms|miles|mi|كم|كيلو)(?![a-z])")
 _PRICE_TOKEN_RE = re.compile(rf"(?<![\d.,])({_NUM})(?:\s*({_SUFFIX}))?")
 _PRICE_CUE_BEFORE = re.compile(r"(?:price|asking|for|from|sar|ريال|السعر|سعر|بسعر|total|بقيمه)[\s:]*$")
 _CURRENCY_AFTER = re.compile(r"^\s*(?:sar|riyals?|ريال|ر\.س)")
@@ -77,6 +85,17 @@ def _matches_any(patterns: list[str], text: str) -> bool:
     return any(re.search(p, text) for p in patterns)
 
 
+def _real_estate_signal(folded: str) -> bool:
+    """Something that makes it about property: a type, a known place, an area, bedrooms, or 'حي X'."""
+    return bool(
+        any(re.search(p, folded) for _, p in _TYPES)
+        or find_places(folded, CITIES + DISTRICTS)
+        or _AREA_RE.search(folded)
+        or _BEDROOM_RE.search(folded)
+        or re.search(r"(?:^|\s)حي\s", folded)
+    )
+
+
 def classify(folded: str) -> str:
     if _matches_any(_BUYER, folded):
         return "buyer_request"
@@ -84,7 +103,8 @@ def classify(folded: str) -> str:
         return "project"
     has_type = any(re.search(p, folded) for _, p in _TYPES)
     has_number = re.search(r"\d", folded) is not None
-    if _matches_any(_LISTING, folded) or (has_type and has_number):
+    # "for sale" alone isn't enough: "Toyota Camry for sale" isn't a property listing.
+    if (_matches_any(_LISTING, folded) and _real_estate_signal(folded)) or (has_type and has_number):
         return "listing"
     return "irrelevant"
 
@@ -116,20 +136,36 @@ def _single_int(pattern: re.Pattern[str], folded: str) -> int | None:
     return values.pop() if len(values) == 1 else None
 
 
+_LABEL_AFTER = {kind: re.compile(rf"^\s*[:\-]?\s*(?:{lbl})") for kind, lbl in
+                (("land", _LAND_LABEL), ("built", _BUA_LABEL))}
+_LABEL_BEFORE = {kind: re.compile(rf"(?:{lbl})\s*[:\-]?\s*$") for kind, lbl in
+                 (("land", _LAND_LABEL), ("built", _BUA_LABEL))}
+
+
+def _area_label(folded: str, start: int, end: int) -> str | None:
+    """A label directly touching the area: after the unit ("450 sqm land", "380m2 built-up")
+    or right before the number ("BUA 420 sqm", "مساحة الأرض ٦٠٠ م٢"). Labels further away
+    belong to a neighbouring area, so they don't count (D14)."""
+    after, before = folded[end: end + 15], folded[max(0, start - 20): start]
+    for kind in ("land", "built"):
+        if _LABEL_AFTER[kind].search(after):
+            return kind
+    for kind in ("land", "built"):
+        if _LABEL_BEFORE[kind].search(before):
+            return kind
+    return None
+
+
 def _areas(folded: str) -> tuple[float | None, float | None, list[tuple[int, int]]]:
     """Returns (built_up, land, spans). Unlabeled single area → built_up."""
     built, land, unlabeled, spans = [], [], [], []
     for m in _AREA_RE.finditer(folded):
         spans.append(m.span())
         value = float(m.group(1).replace(",", ""))
-        after, before = folded[m.end(): m.end() + 15], folded[max(0, m.start() - 15): m.start()]
-        if re.search(_LAND_LABEL, after):
+        kind = _area_label(folded, m.start(), m.end())
+        if kind == "land":
             land.append(value)
-        elif re.search(_BUA_LABEL, after):
-            built.append(value)
-        elif re.search(_LAND_LABEL, before):
-            land.append(value)
-        elif re.search(_BUA_LABEL, before):
+        elif kind == "built":
             built.append(value)
         else:
             unlabeled.append(value)
@@ -151,11 +187,23 @@ def _bedrooms(folded: str) -> int | None:
     return None
 
 
+def _period_after(folded: str, end: int) -> str | None:
+    """Period stated right after an amount, allowing a currency in between: '4,500 SAR monthly'."""
+    tail = folded[end: end + 24]
+    tail = tail[_CURRENCY_PREFIX_RE.match(tail).end():] if _CURRENCY_PREFIX_RE.match(tail) else tail
+    if _YEARLY.match(tail):
+        return "yearly"
+    if _MONTHLY.match(tail):
+        return "monthly"
+    return None
+
+
 def _prices(folded: str, original: str, masked: list[tuple[int, int]]):
     """Returns (price_texts, price_per_sqm_text, period). Raw text, never computed."""
     per_sqm_text = None
-    per = list(_PER_SQM_RE.finditer(folded))
+    per = list(_PER_SQM_RE.finditer(folded)) + list(_PER_SQM_AR_RE.finditer(folded))
     if per:
+        per.sort(key=lambda m: m.start())
         per_sqm_text = original[per[0].start(1): per[0].end(1)]
         masked = masked + [m.span() for m in per]
 
@@ -165,16 +213,19 @@ def _prices(folded: str, original: str, masked: list[tuple[int, int]]):
     candidates: list[tuple[str, int]] = []
     for m in _PRICE_TOKEN_RE.finditer(folded):
         s, e = m.span()
-        if is_masked(s, e):
+        if is_masked(s, e) or _DISTANCE_AFTER.match(folded[e: e + 8]):
             continue
         has_suffix = m.group(2) is not None
         cue = _PRICE_CUE_BEFORE.search(folded[max(0, s - 12): s])
         currency = _CURRENCY_AFTER.match(folded[e: e + 8])
-        period = _YEARLY.match(folded[e: e + 12]) or _MONTHLY.match(folded[e: e + 12])
+        period = _period_after(folded, e)
+        # A bare comma-grouped number ("3BR, 60,000.") is a price: areas, phones and
+        # years are already masked (DECISIONS.md D14).
+        grouped = _COMMA_GROUPED_RE.fullmatch(m.group(1).rstrip(".,")) is not None
         digits = re.sub(r"\D", "", m.group(1))
-        if not (has_suffix or cue or currency or period) or len(digits) < 3 and not has_suffix:
+        if not (has_suffix or cue or currency or period or grouped) or len(digits) < 3 and not has_suffix:
             continue
-        candidates.append((original[s:e].strip(), e))
+        candidates.append((original[s:e].strip().rstrip(".,"), e))
 
     # One text per distinct amount ("3.2M" and "3,200,000" are the same price).
     price_texts: list[str] = []
@@ -186,11 +237,9 @@ def _prices(folded: str, original: str, masked: list[tuple[int, int]]):
             continue
         seen.add(value)
         price_texts.append(text)
-        tail = folded[end: end + 12]
-        if _YEARLY.match(tail):
-            periods.add("yearly")
-        elif _MONTHLY.match(tail):
-            periods.add("monthly")
+        stated = _period_after(folded, end)
+        if stated:
+            periods.add(stated)
     period = periods.pop() if len(periods) == 1 else None
     if period is None and _PAYMENTS.search(folded):
         period = "yearly"  # rent paid in N payments is a yearly rent (PLAN.md §5)
@@ -285,7 +334,7 @@ class RuleExtractor:
 
     def _project(self, text: str, folded: str) -> ProjectCandidate:
         name = None
-        m = re.search(r"(?:new launch|launch|project|مشروع)\s*[:\-–]?\s*"
+        m = re.search(r"(?:new launch|launching(?: soon)?|launch|project|مشروع)\s*[:\-–]?\s*"
                       r"((?:[A-Z][\w']*)(?:\s+[A-Z][\w']*){0,4})", text, re.IGNORECASE)
         if m and m.group(1)[0].isupper():
             name = m.group(1).strip()

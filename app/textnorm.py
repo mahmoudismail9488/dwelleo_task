@@ -107,10 +107,19 @@ def normalize_saudi_mobile(raw: str | None) -> str | None:
     return None
 
 
+# A country code written right before a candidate: "+971 50 123 4567" is a UAE number,
+# not the Saudi "50 123 4567" (DECISIONS.md D14).
+_FOREIGN_PREFIX_RE = re.compile(r"(?:\+|00)(\d{1,3})[\s\-]*\(?$")
+
+
 def find_saudi_mobiles(text: str) -> list[str]:
     """All distinct Saudi mobiles found in free text, normalized, in order of appearance."""
     found: list[str] = []
-    for m in _PHONE_CANDIDATE_RE.finditer(to_ascii_digits(text)):
+    ascii_text = to_ascii_digits(text)
+    for m in _PHONE_CANDIDATE_RE.finditer(ascii_text):
+        prefix = _FOREIGN_PREFIX_RE.search(ascii_text[max(0, m.start() - 8): m.start()])
+        if prefix and prefix.group(1) != "966":
+            continue
         phone = normalize_saudi_mobile(m.group())
         if phone and phone not in found:
             found.append(phone)

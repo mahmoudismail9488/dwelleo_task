@@ -177,3 +177,73 @@ def test_unknown_district_captured_from_text():
 
 def test_city_is_not_captured_as_district():
     assert extract("Apartment for rent in Riyadh 60K/yr").listings[0].district is None
+
+
+# --- regressions found with the 50-message test file (D14) ---------------------------
+
+@pytest.mark.parametrize("text, built, land", [
+    ("Villa for sale in Al Narjis – 6 BR, BUA 420 sqm, land 500 sqm. SAR 4.5M", 420, 500),
+    ("فيلا للبيع في حطين. مساحة الأرض ٦٠٠ م٢، مساحة البناء ٥٢٠ م٢، السعر ٥٫٢ مليون", 520, 600),
+    ("Villa 450 sqm land / 380 sqm BUA, 3.2M", 380, 450),       # m-001 order still works
+])
+def test_area_labels_before_or_after_the_number(text, built, land):
+    (l,) = extract(text).listings
+    assert (l.built_up_area_sqm, l.land_area_sqm) == (built, land)
+
+
+@pytest.mark.parametrize("text, period", [
+    ("Studio for rent in Al Olaya, Khobar. 4,500 SAR monthly", "monthly"),
+    ("Apartment for rent – 75,000 SAR/year", "yearly"),
+    ("Shop for rent 2.500 SAR monthly in Al Hamra, Jeddah", "monthly"),
+])
+def test_period_after_currency(text, period):
+    assert extract(text).listings[0].price_period == period
+
+
+def test_arabic_per_sqm_phrasing_is_read():
+    (l,) = extract("أرض للبيع في أبحر، جدة. المساحة ١٢٠٠ م٢، سعر المتر ٢٠٠٠ ريال، الإجمالي ٢٫٥ مليون").listings
+    assert l.price_per_sqm.quote == "٢٠٠٠"
+    assert quotes(l) == ["٢٫٥ مليون"]
+
+
+def test_project_name_after_launching_soon():
+    p = extract("Launching soon: Sadr Gardens, Riyadh. Villas off-plan, from SAR 1.9M").project
+    assert p.name == "Sadr Gardens"
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Apartment for rent in Al Rawdah, 3BR, 60,000. Call 0598765432", ["60,000"]),
+    ("Villa for sale in Al Arid, 5 bedrooms, 3,900,000. Call 0558765432", ["3,900,000"]),
+])
+def test_bare_comma_grouped_number_is_a_price(text, expected):
+    assert quotes(extract(text).listings[0]) == expected
+
+
+def test_distances_are_not_prices():
+    (l,) = extract("Villa for sale in Al Malqa, 5BR, 12,000 km from nowhere, price 3.2M").listings
+    assert quotes(l) == ["3.2M"]
+
+
+@pytest.mark.parametrize("text", [
+    "Toyota Camry 2021 for sale, 85,000 km, price 75K. 0541239999",
+    "iPhone 15 for sale, 3,500 SAR",
+])
+def test_for_sale_without_real_estate_signal_is_irrelevant(text):
+    assert extract(text).classification == "irrelevant"
+
+
+def test_unknown_district_listing_without_type_is_still_a_listing():
+    assert extract("للبيع في حي الربوة بسعر 850 ألف").classification == "listing"
+
+
+@pytest.mark.parametrize("text", [
+    "Any 4BR villas in Al Malqa under 3M? My client is ready, cash.",
+    "My client wants an apartment in Hittin",
+    "Client is looking for land in Obhur, Jeddah",
+])
+def test_buyer_cues(text):
+    assert extract(text).classification == "buyer_request"
+
+
+def test_any_questions_in_a_listing_is_not_a_buyer_request():
+    assert extract("Villa for sale in Al Malqa, 3.2M. Any questions? Call 0551234567").classification == "listing"

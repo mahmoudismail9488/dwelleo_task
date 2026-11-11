@@ -142,3 +142,22 @@ def test_find_saudi_mobiles_does_not_match_inside_longer_numbers():
 
 def test_find_saudi_mobiles_returns_empty_when_none():
     assert find_saudi_mobiles("Apartment for rent in Al Olaya, 2BR furnished, 85,000/yr") == []
+
+
+@pytest.mark.parametrize("text", [
+    "contact +971 50 123 4567",      # UAE
+    "call 00971-50-123-4567",
+    "WhatsApp +20 55 123 4567",      # Egypt
+    "tel +1 (555) 123 4567",
+])
+def test_foreign_numbers_are_not_read_as_saudi(text):
+    # Regression (D14): "+971 50 123 4567" was normalized to the Saudi +966501234567.
+    assert find_saudi_mobiles(text) == []
+
+
+def test_saudi_number_after_a_foreign_one_is_still_found():
+    assert find_saudi_mobiles("UAE +971 50 123 4567 / KSA 0551234567") == ["+966551234567"]
+
+
+def test_dashed_00966_number():
+    assert find_saudi_mobiles("call 00966-55-987-6543") == ["+966559876543"]
