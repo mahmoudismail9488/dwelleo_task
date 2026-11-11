@@ -130,7 +130,7 @@ class LlmExtractor:
             client = OpenAI(
                 api_key=os.environ["LLM_API_KEY"],
                 base_url=os.environ.get("LLM_BASE_URL", DEFAULT_BASE_URL),
-                timeout=float(os.environ.get("LLM_TIMEOUT_SECONDS", "20")),
+                timeout=float(os.environ.get("LLM_TIMEOUT_SECONDS", "60")),
                 max_retries=1,  # connection errors, 429, 5xx; malformed output is never retried
             )
         self.client = client

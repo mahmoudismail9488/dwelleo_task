@@ -212,7 +212,7 @@ def test_with_a_key_the_llm_extractor_is_used(monkeypatch):
     monkeypatch.setenv("LLM_MODEL", "qwen-test")
     ex = default_extractor()
     assert isinstance(ex, LlmExtractor) and ex.model == "qwen-test"
-    assert ex.client.max_retries == 1 and ex.client.timeout == 20.0
+    assert ex.client.max_retries == 1 and ex.client.timeout == 60.0
 
 
 # --- llm_runs: every call is recorded with the message id ---------------------------
@@ -265,3 +265,21 @@ def test_llm_summary_aggregates_runs(monkeypatch):
     s = store.llm_summary()
     assert (s["calls"], s["ok"], s["input_tokens"]) == (2, 1, 900)
     assert s["total_cost_usd"] == pytest.approx(0.00252)
+
+
+def test_llm_purpose_inferred_from_yearly_price_is_flagged_like_the_rules_path():
+    # Regression (D13), seen in the live qwen3.8-max run on m-010.
+    out = {"classification": "listing", "listings": [
+        {"purpose": "rent", "property_type": "studio", "district": "Al Yasmin",
+         "prices": [{"quote": "35K", "amount": 35000}], "price_period": "yearly",
+         "contact_phone_text": "0520202020"},
+        {"purpose": "rent", "district": "Al Yasmin", "bedrooms": 2,
+         "prices": [{"quote": "55K", "amount": 55000}], "price_period": "yearly",
+         "contact_phone_text": "0520202020"},
+        {"purpose": "rent", "district": "Hittin", "bedrooms": 3,
+         "prices": [{"quote": "80K", "amount": 80000}], "price_period": "yearly",
+         "contact_phone_text": "0520202020"}]}
+    for l in run("m-010", llm(out)).listings:
+        assert l.purpose == "rent"                       # same value…
+        assert "purpose" in l.inferred_fields            # …now honestly labelled
+        assert {"purpose_unverified", "purpose_inferred"} <= set(l.review_reasons)
