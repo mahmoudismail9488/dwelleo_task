@@ -129,3 +129,30 @@ The same applies to `price_per_sqm` and a project's `min_price`.
 **Why (my call).** *Exact only:* this is consistent with D2. Any numeric gap means the listings disagree, and I'd rather miss a rounded repost than merge two different properties. *Conflicts block:* the same broker often posts several similar units in one district. Without the check, two Al Malqa villas at 3.2M (5BR and 6BR) would be merged.
 
 **Trade-off accepted.** Reposts with a rounded price *and* no matching area won't be detected and will appear as separate listings.
+
+---
+
+## D9 — [Agent mistake] Grounding accepted the sender's number as "stated in the message"
+
+**What happened.** The agent's `phone_is_grounded` counted a phone as grounded if it appeared in the text *or* matched the sender. Using the sender is an inference (PLAN.md §5: "fall back to the sender" means `contact_phone_from_sender`). So if the LLM ignored the prompt and copied the sender into `contact_phone_text` for a message with no phone (m-004), the output had the sender's number with **no review reason and nothing in `inferred_fields`**. That's exactly the kind of silent inference the hard rule forbids. The rules extractor never triggered it, because it only reads phones from the text, so no existing test failed.
+
+**How it was caught.** While writing the LLM tests, the agent noticed that one of its own tests (`test_llm_using_sender_as_contact_is_not_trusted_as_stated`) asserted something trivially true and didn't test what its name claimed. Writing the real version (LLM copies the sender for m-004) and running it through the pipeline showed `contact_phone: +966541112222` with reasons `['city_missing', 'area_missing']`, so the inference was unflagged.
+
+**What changed.** `phone_is_grounded` now accepts only phones written in the message text. A copied sender number is rejected (`contact_phone_unverified`), and `review.py` then applies the normal sender fallback with `contact_phone_from_sender` and `"contact_phone"` in `inferred_fields`. The result is the same number, honestly labelled. Regression tests are in `test_grounding.py` and `test_llm_extractor.py`.
+
+**Lesson.** A test whose name promises more than its assertion checks is worse than no test. And "grounded" has to mean "in the text", with no convenient exceptions, because every exception is a path for unflagged inference.
+
+---
+
+## D10 — Settings come from `.env` when present; without it, the rule extractor is used
+
+**Decision.** The CLI, the API and `scripts/measure_llm.py` load `.env` themselves (`app/config.py`, using `python-dotenv`). Values already exported in the shell win over the file. With no `.env`, or an empty `LLM_API_KEY`, everything runs on the rule extractor. The test suite never reads `.env`: `conftest.py` points `ENV_FILE` at a missing file and clears the LLM variables, and subprocesses started by tests inherit that.
+
+**Alternatives considered.**
+1. *Makefile `--env-file .env`* (the agent's step-8 version): only `make serve` saw the file, while the CLI and the script silently ignored it.
+2. *Plain exported variables only*: consistent, but every run needs `export` first.
+3. *Our own `.env` parser* instead of `python-dotenv`: no new dependency, but the edge cases (quotes, comments) would be ours to get right.
+
+**Why (my call).** One behaviour everywhere: `cp .env.example .env`, fill in the key, and every entry point uses the LLM. A fresh clone with no `.env` works out of the box on rules, which is also what the graders get when they run the hidden set. Letting the shell win allows a one-off override (`LLM_MODEL=qwen-turbo uv run normalizer …`).
+
+**Safety detail.** Without the `ENV_FILE` redirect, running `make test` on a developer machine would load the real key and call the paid API from the test suite. `tests/test_config.py` asserts that this can't happen.
