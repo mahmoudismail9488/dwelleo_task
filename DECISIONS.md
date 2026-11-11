@@ -146,7 +146,7 @@ The same applies to `price_per_sqm` and a project's `min_price`.
 
 ## D10 — Settings come from `.env` when present; without it, the rule extractor is used
 
-**Decision.** The CLI, the API and `scripts/measure_llm.py` load `.env` themselves (`app/config.py`, using `python-dotenv`). Values already exported in the shell win over the file. With no `.env`, or an empty `LLM_API_KEY`, everything runs on the rule extractor. The test suite never reads `.env`: `conftest.py` points `ENV_FILE` at a missing file and clears the LLM variables, and subprocesses started by tests inherit that.
+**Decision.** The CLI, the API and `scripts/measure_llm.py` (later removed, D11) load `.env` themselves (`app/config.py`, using `python-dotenv`). Values already exported in the shell win over the file. With no `.env`, or an empty `LLM_API_KEY`, everything runs on the rule extractor. The test suite never reads `.env`: `conftest.py` points `ENV_FILE` at a missing file and clears the LLM variables, and subprocesses started by tests inherit that.
 
 **Alternatives considered.**
 1. *Makefile `--env-file .env`* (the agent's step-8 version): only `make serve` saw the file, while the CLI and the script silently ignored it.
@@ -168,3 +168,50 @@ The same applies to `price_per_sqm` and a project's `min_price`.
 **Why (my call).** Cost and latency should be measured on every real call, not estimated once. The table answers the README's "cost and latency per message" from production data, and it lets anyone check what a given message cost.
 
 **What the first real run showed** (qwen3.8-max, 10 sample messages, $2/$6 per 1M tokens): 8 calls ok, about 1,010 input and 370 output tokens each, **about $0.0042 per message** (≈ $4.2 per 1,000), latency 5–20s (mean ≈ 12.4s on successful calls). m-007 and m-010, the contradiction and the multi-listing message, **timed out twice** (20s × 2 attempts ≈ 41s) and fell back to rules, flagged `llm_fallback_used`.
+
+---
+
+## D12 — [Agent mistake] Projects ignored the sender-phone policy; caught by me in manual testing
+
+**What happened.** PLAN.md §5 says: no phone in the text → use the sender's number, flagged `contact_phone_from_sender`. The agent applied this in `build_listing` but not in `build_project`, which only read a phone from the text. For m-006 (a project with no phone in its text), both the LLM and the rules path returned `contact_phone: null` with **no review reason**. The project looked complete when it was missing a contact, and the behaviour silently differed from listings (m-004 got the sender plus a flag).
+
+**How it was caught.** I posted m-006 through the API's `/docs` page, once with the LLM and once with rules, and saw `contact_phone: null` both times. No test covered it: the project tests only checked name, city, price and bedrooms. The agent had even listed "project contact phone: no sender fallback" in a private note as a limitation, but never raised it as a decision.
+
+**What changed.** The contact rule is now one shared helper (`_contact` in `app/review.py`), used by both listings and projects, so they can't drift apart again. `Project` gained `inferred_fields`. m-006 now returns the sender's number, `contact_phone_from_sender`, `inferred_fields: ["contact_phone"]` and `needs_review: true`. With no usable sender, it's flagged `contact_phone_missing`. Tests cover a project with a phone in the text, the sender fallback, no sender, and m-006 through the API.
+
+**Lesson.** When a policy applies to "the contact", every object that has a contact needs it, so one shared function is better than two copies. And a gap the agent knows about must go to the user as a decision, not into a private note.
+
+---
+
+## D13 — [Agent mistake] LLM-inferred purpose passed grounding as if it were stated
+
+**What happened.** Grounding checked enum fields (`purpose`, `property_type`, `price_period`) only for a *valid value*, never for whether the message actually states it. In the live qwen3.8-max run, m-010 ("Available now: 1) Studio … 35K/yr …") came back with `purpose: rent` on all three listings and **no `purpose_inferred` flag**. The message never says rent; the LLM inferred it from `/yr`. The rules path flags exactly this inference (step 4 decision), so the two paths disagreed on the hard rule. It's the same class of hole as D9: a valid-looking value that is really the model's inference.
+
+**How it was caught.** By reading the live results line by line after the 60s-timeout run, and comparing them with the rules output for the same message. The rules path had `purpose_inferred` for m-010 and the LLM path didn't. No test covered it, because the fake-client tests always used values that were stated.
+
+**What changed.** An enum value now needs both a valid value *and* a word in the message that states it (`enum_is_stated` in `app/grounding.py`). Purpose and type reuse the rule extractor's keyword lists; period has its own cues (`/yr`, `سنوي`, `2 payments`, `monthly`, `total`…). Otherwise it's rejected (`<field>_unverified`), and `review.py` applies the normal policy. For m-010 that's `purpose: rent` **with** `purpose_inferred` and `"purpose"` in `inferred_fields`: the same value, honestly labelled. Regression tests cover English and Arabic cues, a type guessed from "2BR", and periods without cues.
+
+**Trade-off accepted.** A message that states purpose or type in words our keyword lists don't know (e.g. "chalet", "lease-to-own") now loses that field to review on the LLM path too. That's conservative, but correct under the hard rule.
+
+---
+
+## D14 — [Agent mistake] A 50-message test file exposed rule-extractor bugs, including a foreign phone read as Saudi
+
+**What happened.** I asked for a broad test file (`messages.jsonl`: 50 messages covering every case we could think of, beyond the 10 samples). Running it in rules mode exposed bugs that break policies we had already agreed:
+- **G, the worst:** `contact +971 50 123 4567` (a UAE number) came out as the Saudi **`+966501234567`**. That's a *wrong* contact phone, effectively invented data. The phone pattern accepted `50 123 4567` without checking for a country code just before it. This is the same family of mistake as D3: a phone pattern that's too generous.
+- **A:** when the area label came *before* the number (`BUA 420 sqm, land 500 sqm`, `مساحة الأرض ٦٠٠ م٢`), both areas were lost. The code looked for labels anywhere within 15 characters, so a label belonging to the *next* area won.
+- **B:** `4,500 SAR monthly` / `SAR/year`: the period was lost whenever a currency sat between the number and the period, giving false `price_period_missing` flags.
+- **H:** the Arabic per-m² phrasing `سعر المتر ٢٠٠٠` wasn't recognized, so the 2.4M vs 2.5M contradiction was missed and 2.5M was accepted.
+- **I:** the project name after "Launching soon:" was missed.
+
+**How it was caught.** Each message in the file carries a `note` with the expected result. Comparing the rules output with the notes showed every gap. Re-running after the fixes and diffing against the first run confirmed that only the intended results changed.
+
+**What changed.** G: candidates directly preceded by a non-966 country code (`+971`, `00971`, `+20`…) are skipped. A: a label counts only if it *touches* the area (right after the unit, or right before the number). B: an optional currency is allowed between an amount and its period. H: an Arabic "unit-first" per-m² pattern. I: "launching (soon)" before the name. Every fix has a regression test.
+
+**Extraction changes I approved at the same time (my call):**
+- **C:** a bare comma-grouped number ("3BR, 60,000.") is a price candidate. Areas, phones and years are already masked, and distances (`85,000 km`) are now masked too.
+- **D:** "for sale" alone no longer makes a listing. It also needs a real-estate signal (property type, known place, area, bedrooms, or `حي X`), so "Toyota Camry for sale" is irrelevant.
+- **E:** buyer cues "my client", "client is ready/looking", and a question asking for a property ("Any 4BR villas…?"), but not "Any questions?".
+- **Not done (F):** commercial units (`other`) still get `bedrooms_missing`.
+
+**Still a rules-mode limit (left for the LLM):** heavy typos ("Vila for sael"), and bullet lists without numbers stay one listing with two prices (flagged).
