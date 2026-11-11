@@ -156,3 +156,15 @@ The same applies to `price_per_sqm` and a project's `min_price`.
 **Why (my call).** One behaviour everywhere: `cp .env.example .env`, fill in the key, and every entry point uses the LLM. A fresh clone with no `.env` works out of the box on rules, which is also what the graders get when they run the hidden set. Letting the shell win allows a one-off override (`LLM_MODEL=qwen-turbo uv run normalizer …`).
 
 **Safety detail.** Without the `ENV_FILE` redirect, running `make test` on a developer machine would load the real key and call the paid API from the test suite. `tests/test_config.py` asserts that this can't happen.
+
+---
+
+## D11 — Every LLM call is recorded in an `llm_runs` table
+
+**Decision.** Each LLM call writes one row: `message_id` (required), `model`, `status` (`ok` / `error` / `invalid_output` / `unusable`), `error`, input and output tokens, input, output and total cost in USD, `latency_s`, and `created_at`. The extractor captures the metrics from each response, and `process_message()` writes the row, so the extractor stays free of storage code. Failed calls are recorded too: an `invalid_output` call was still paid for. The provider returns tokens, not cost, so cost = tokens × `LLM_INPUT_PRICE_PER_M` / `LLM_OUTPUT_PRICE_PER_M` (USD per 1M tokens, set in `.env`), or null if those aren't set. The CLI prints a summary to stderr when the LLM was used, and the API exposes `GET /llm-runs?message_id=`.
+
+**Alternative considered.** The agent's `scripts/measure_llm.py`: a one-off benchmark run outside the product. It was removed.
+
+**Why (my call).** Cost and latency should be measured on every real call, not estimated once. The table answers the README's "cost and latency per message" from production data, and it lets anyone check what a given message cost.
+
+**What the first real run showed** (qwen3.8-max, 10 sample messages, $2/$6 per 1M tokens): 8 calls ok, about 1,010 input and 370 output tokens each, **about $0.0042 per message** (≈ $4.2 per 1,000), latency 5–20s (mean ≈ 12.4s on successful calls). m-007 and m-010, the contradiction and the multi-listing message, **timed out twice** (20s × 2 attempts ≈ 41s) and fell back to rules, flagged `llm_fallback_used`.
